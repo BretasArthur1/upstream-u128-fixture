@@ -5,9 +5,9 @@ build-std = ["core", "alloc"]
 rustflags = [
     # "-C", "linker=sbpf-linker",
     "-C", "panic=abort",
-    # "-C", "save-temps",
-    "--emit=llvm-ir",
-    "-C", "link-arg=--llvm-args=-bpf-stack-size=4096",
+	# "-C", "llvm-args=-print-after-all",
+    # "--emit=mir",
+ 	"-C", "link-arg=--llvm-args=-bpf-stack-size=4096",
     "-C", "relocation-model=static",
 ]
 

@@ -1,6 +1,5 @@
-#![cfg_attr(target_arch = "bpf", no_std)]
-#![no_builtins]
-#[cfg(target_arch = "bpf")]
+#![cfg_attr(target_arch = "bpf", no_std, no_builtins)]
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
