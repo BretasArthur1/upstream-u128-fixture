@@ -3,13 +3,13 @@ build-std = ["core", "alloc"]
 
 [target.bpfel-unknown-none]
 rustflags = [
-    # "-C", "linker=sbpf-linker",
+    "-C", "linker=/Users/cfan/Library/Caches/u128-bpf-toolchain/sbpf-linker/target/release/sbpf-linker",
     "-C", "panic=abort",
-	# "-C", "llvm-args=-print-after-all",
-    # "--emit=mir",
- 	"-C", "link-arg=--llvm-args=-bpf-stack-size=4096",
+    "-C", "link-arg=--dump-module=llvm_dump",
+    "-C", "link-arg=--llvm-args=-bpf-stack-size=4096",
     "-C", "relocation-model=static",
 ]
 
 [alias]
 build-bpf = "build --release --target bpfel-unknown-none"
+xtask = "run --package xtask --"

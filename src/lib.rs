@@ -1,20 +1,22 @@
-#![cfg_attr(target_arch = "bpf", no_std, no_builtins)]
+#![cfg_attr(target_arch = "bpf", no_std)]
 
+#[cfg(target_arch = "bpf")]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
-pub fn sol_log_data(data: &[&[u8]]) {
-    let sol_log_data: unsafe extern "C" fn(data: *const u8, len: u64) = unsafe { core::mem::transmute(0x7317b434_usize) };
-    unsafe { sol_log_data(data.as_ptr() as *const u8, data.len() as u64) }
-}
-
 #[unsafe(no_mangle)]
-pub fn entrypoint(input: *mut u8) -> u64 {
-    let x: u128 = unsafe { (*(input.add(0x0010) as *const u128)) * 0x03 };
-    sol_log_data(&[x.to_le_bytes().as_ref()]);
-    0
+pub fn entrypoint(i: *mut u8) -> u64 {
+    let mut a = unsafe { *(i.add(0x0010) as *const u128) };
+    let b = unsafe { *((i.add(0x0010) as *const u128).wrapping_add(1)) };
+    
+    for _ in 0..10000 {
+        // reassign a to avoid multiply being optimized away
+        a = a * b;
+    }
+    
+    (a >> 64) as u64
 }
 
 #[cfg(test)]
@@ -22,15 +24,18 @@ mod tests {
     use mollusk_svm::{Mollusk, result::Check};
     use solana_instruction::Instruction;
 
+    const PROGRAM_ID: [u8; 32] = [0x02; 32];
+
     #[test]
-    pub fn hello_world() {
-        let mollusk = Mollusk::new(&[2u8;32].into(), "target/bpfel-unknown-none/release/libupstream_u128_test");
-        mollusk.process_and_validate_instruction(&Instruction {
-            program_id: [2u8;32].into(),
+    pub fn test() {
+        let mollusk = Mollusk::new(&PROGRAM_ID.into(), // 
+            "target/bpfel-unknown-none/release/libupstream_u128_test");
+        let input_data : [i128; 2] = [10, 20];
+        let instruction = solana_instruction::Instruction {
+            program_id: PROGRAM_ID.into(),
             accounts: vec![],
-            data: vec![0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ]
-        }, &vec![], &[
-            Check::success()
-        ]);
+            data: input_data.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        };
+        mollusk.process_and_validate_instruction(&instruction, &[], &[Check::success()]);
     }
 }
