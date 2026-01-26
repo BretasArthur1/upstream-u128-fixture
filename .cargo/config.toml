@@ -3,7 +3,7 @@ build-std = ["core", "alloc"]
 
 [target.bpfel-unknown-none]
 rustflags = [
-    "-C", "linker=/Users/cfan/Library/Caches/u128-bpf-toolchain/sbpf-linker/target/release/sbpf-linker",
+    "-C", "linker=sbpf-linker",
     "-C", "panic=abort",
     "-C", "link-arg=--dump-module=llvm_dump",
     "-C", "link-arg=--llvm-args=-bpf-stack-size=4096",

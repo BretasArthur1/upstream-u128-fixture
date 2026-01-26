@@ -1,14 +1,15 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use walkdir::WalkDir;
 
-const RUST_REPO: &str = "https://github.com/blueshift-gg/rust";
-const RUST_BRANCH: &str = "BPF_i128_ret";
 const LLVM_REPO: &str = "https://github.com/blueshift-gg/llvm-project.git";
+const LLVM_BRANCH: &str = "BPF_i128_ret";
 const LINKER_REPO: &str = "https://github.com/blueshift-gg/sbpf-linker";
 const LINKER_BRANCH: &str = "u128_mul_libcall";
-const TOOLCHAIN_NAME: &str = "stage1";
 
 /// xtask for setting up custom Rust compiler with i128 BPF support
 #[derive(Parser)]
@@ -21,12 +22,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Set up the complete toolchain (rust compiler + sbpf linker)
+    /// Set up the complete toolchain (LLVM + sbpf linker)
     Setup,
     /// Clone and build the SBPF linker only
     BuildLinker,
-    /// Set up and build the Rust compiler with modified LLVM only
-    BuildCompiler,
+    /// Clone and build LLVM with modified BPF backend
+    BuildLlvm,
     /// Build the example project with the custom toolchain
     Build,
 }
@@ -37,23 +38,21 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Setup => {
+            setup_llvm()?;
             setup_linker(&project_root)?;
-            setup_compiler(&project_root)?;
             println!();
             println!("==========================================");
             println!("Setup complete!");
             println!();
             println!("Build this project with:");
-            println!("  cargo xtask build");
-            println!("  # or directly:");
-            println!("  cargo +{} build-bpf", TOOLCHAIN_NAME);
+            println!("  cargo +nightly build-bpf");
             println!("==========================================");
         }
         Commands::BuildLinker => {
             setup_linker(&project_root)?;
         }
-        Commands::BuildCompiler => {
-            setup_compiler(&project_root)?;
+        Commands::BuildLlvm => {
+            setup_llvm()?;
         }
         Commands::Build => {
             build_project(&project_root)?;
@@ -106,11 +105,13 @@ fn setup_linker(project_root: &Path) -> Result<()> {
         )?;
     }
 
-    // 2. Build SBPF linker
-    println!("[2/3] Building SBPF linker...");
+    // 2. Build SBPF linker with LLVM_PREFIX pointing to our custom LLVM
+    let llvm_install_dir = base_dir.join("llvm-install");
+    println!("[2/3] Building SBPF linker (LLVM_PREFIX={})...", llvm_install_dir.display());
     run_command(
         Command::new("cargo")
             .args(["build", "--release"])
+            .env("LLVM_PREFIX", &llvm_install_dir)
             .current_dir(&linker_dir),
         "build sbpf-linker",
     )?;
@@ -147,170 +148,132 @@ xtask = "run --package xtask --"
     Ok(())
 }
 
-fn setup_compiler(_project_root: &Path) -> Result<()> {
+fn setup_llvm() -> Result<()> {
     let base_dir = cache_dir();
-    let rust_dir = base_dir.join("rust-compiler");
-    println!("  Rust compiler will be built in: {}", rust_dir.display());
+    let llvm_src_dir = base_dir.join("llvm-project");
+
+    println!("  LLVM will be built in: {}", base_dir.display());
 
     // Ensure cache directory exists
     std::fs::create_dir_all(&base_dir)?;
 
-    // 1. Clone Rust compiler if needed
-    println!("[1/5] Cloning Rust compiler...");
-    if rust_dir.exists() {
-        println!("  rust-compiler directory already exists, skipping clone");
+    // 1. Clone LLVM repo if needed
+    println!("[1/2] Cloning LLVM...");
+    if llvm_src_dir.exists() {
+        println!("  llvm-project directory already exists, skipping clone");
     } else {
         run_command(
             Command::new("git")
-                .args(["clone", "--branch", RUST_BRANCH, RUST_REPO])
-                .arg(&rust_dir),
-            "clone rust compiler",
+                .args(["clone", "--branch", LLVM_BRANCH, LLVM_REPO])
+                .arg(&llvm_src_dir),
+            "clone llvm-project",
         )?;
     }
 
-    // 2. Update LLVM submodule to use blueshift fork
-    println!("[2/5] Updating LLVM submodule...");
-    let llvm_submodule_url = get_submodule_url(&rust_dir, "src/llvm-project")?;
+    // 2. Build LLVM from source
+    println!("[2/2] Building LLVM (this may take a while)...");
+    let llvm_build_dir = base_dir.join("llvm-build");
+    let llvm_install_dir = base_dir.join("llvm-install");
+    std::fs::create_dir_all(&llvm_build_dir)?;
+    std::fs::create_dir_all(&llvm_install_dir)?;
+    build_llvm(&llvm_src_dir, &llvm_build_dir, &llvm_install_dir)?;
 
-    if llvm_submodule_url == LLVM_REPO {
-        println!("  LLVM submodule already points to blueshift repo, skipping re-add");
-        run_command(
-            Command::new("git")
-                .args(["submodule", "update", "--init", "--recursive", "src/llvm-project"])
-                .current_dir(&rust_dir),
-            "update llvm submodule",
-        )?;
-    } else {
-        println!("  Switching LLVM submodule to blueshift repo...");
-        // Remove existing submodule directories
-        let modules_dir = rust_dir.join(".git/modules/src/llvm-project");
-        if modules_dir.exists() {
-            std::fs::remove_dir_all(&modules_dir)?;
+    println!("  LLVM installed to: {}", llvm_install_dir.display());
+    Ok(())
+}
+
+fn build_llvm(src_dir: &Path, build_dir: &Path, install_prefix: &Path) -> Result<()> {
+    let mut install_arg = OsString::from("-DCMAKE_INSTALL_PREFIX=");
+    install_arg.push(install_prefix.as_os_str());
+    let mut cmake_configure = Command::new("cmake");
+    let cmake_configure = cmake_configure
+        .arg("-S")
+        .arg(src_dir.join("llvm"))
+        .arg("-B")
+        .arg(build_dir)
+        .args([
+            "-G",
+            "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DLLVM_BUILD_LLVM_DYLIB=ON",
+            "-DLLVM_ENABLE_ASSERTIONS=ON",
+            "-DLLVM_ENABLE_PROJECTS=",
+            "-DLLVM_ENABLE_RUNTIMES=",
+            "-DLLVM_INSTALL_UTILS=ON",
+            "-DLLVM_LINK_LLVM_DYLIB=ON",
+            "-DLLVM_TARGETS_TO_BUILD=BPF",
+        ])
+        .arg(install_arg);
+    println!("Configuring LLVM with command {cmake_configure:?}");
+    let status = cmake_configure.status().with_context(|| {
+        format!("failed to configure LLVM build with command {cmake_configure:?}")
+    })?;
+    if !status.success() {
+        anyhow::bail!("failed to configure LLVM build with command {cmake_configure:?}: {status}");
+    }
+
+    let mut cmake_build = Command::new("cmake");
+    let cmake_build = cmake_build
+        .arg("--build")
+        .arg(build_dir)
+        .args(["--target", "install"])
+        // Create symlinks rather than copies to conserve disk space,
+        // especially on GitHub-hosted runners.
+        //
+        // Since the LLVM build creates a bunch of symlinks (and this setting
+        // does not turn those into symlinks-to-symlinks), use absolute
+        // symlinks so we can distinguish the two cases.
+        .env("CMAKE_INSTALL_MODE", "ABS_SYMLINK");
+    println!("Building LLVM with command {cmake_build:?}");
+    let status = cmake_build
+        .status()
+        .with_context(|| format!("failed to build LLVM with command {cmake_configure:?}"))?;
+    if !status.success() {
+        anyhow::bail!("failed to build LLVM with command {cmake_configure:?}: {status}");
+    }
+
+    // Move targets over the symlinks that point to them.
+    //
+    // This whole dance would be simpler if CMake supported
+    // `CMAKE_INSTALL_MODE=MOVE`.
+    for entry in WalkDir::new(install_prefix).follow_links(false) {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to read filesystem entry while traversing install prefix {}",
+                install_prefix.display()
+            )
+        })?;
+        if !entry.file_type().is_symlink() {
+            continue;
         }
-        let llvm_dir = rust_dir.join("src/llvm-project");
-        if llvm_dir.exists() {
-            std::fs::remove_dir_all(&llvm_dir)?;
+
+        let link_path = entry.path();
+        let target = fs::read_link(link_path)
+            .with_context(|| format!("failed to read the link {}", link_path.display()))?;
+        if target.is_absolute() {
+            fs::rename(&target, link_path).with_context(|| {
+                format!(
+                    "failed to move the target file {} to the location of the symlink {}",
+                    target.display(),
+                    link_path.display()
+                )
+            })?;
         }
-
-        // Re-add with blueshift repo
-        run_command(
-            Command::new("git")
-                .args(["submodule", "add", "-f", LLVM_REPO, "src/llvm-project"])
-                .current_dir(&rust_dir),
-            "add llvm submodule",
-        )?;
-
-        run_command(
-            Command::new("git")
-                .args(["submodule", "update", "--init", "--recursive", "src/llvm-project"])
-                .current_dir(&rust_dir),
-            "update llvm submodule",
-        )?;
     }
 
-    // Checkout the correct branch in LLVM submodule
-    let llvm_dir = rust_dir.join("src/llvm-project");
-    run_command(
-        Command::new("git")
-            .args(["checkout", "-B", "BPF_i128_ret", "origin/BPF_i128_ret"])
-            .current_dir(&llvm_dir),
-        "checkout LLVM BPF_i128_ret branch",
-    )?;
-
-    // 3. Commit submodule update if needed
-    println!("[3/5] Committing submodule update...");
-    run_command(
-        Command::new("git")
-            .args(["add", "src/llvm-project"])
-            .current_dir(&rust_dir),
-        "stage llvm submodule",
-    )?;
-
-    let diff_status = Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .current_dir(&rust_dir)
-        .status()?;
-
-    if !diff_status.success() {
-        run_command(
-            Command::new("git")
-                .args(["commit", "-m", "TMP: update submodule to BPF_i128_ret"])
-                .current_dir(&rust_dir),
-            "commit llvm submodule update",
-        )?;
-    } else {
-        println!("  No changes to commit");
-    }
-
-    // 4. Configure and build Rust compiler
-    println!("[4/5] Building Rust compiler (this may take a while)...");
-
-    // Create bootstrap.toml if it doesn't exist
-    let config_path = rust_dir.join("bootstrap.toml");
-    if !config_path.exists() {
-        println!("  Creating bootstrap.toml...");
-        let config = r#"change-id = 148803
-[llvm]
-
-# Currently, we only support this when building LLVM for the build triple.
-#
-# Note that many of the LLVM options are not currently supported for
-# downloading. Currently only the "assertions" option can be toggled.
-download-ci-llvm = false
-
-ninja = true
-optimize = true
-"#;
-        std::fs::write(&config_path, config)
-            .context("failed to write rust-compiler/bootstrap.toml")?;
-    }
-
-    run_command(
-        Command::new("./x")
-            .args(["build"])
-            .current_dir(&rust_dir),
-        "build rust compiler",
-    )?;
-
-    // 5. Link toolchain with rustup
-    println!("[5/5] Linking toolchain with rustup...");
-    let stage_dir = rust_dir.join("build/host/stage0");
-    run_command(
-        Command::new("rustup")
-            .args(["toolchain", "link", TOOLCHAIN_NAME])
-            .arg(&stage_dir),
-        "link rustup toolchain",
-    )?;
-
-    println!("  Toolchain linked as '{}'", TOOLCHAIN_NAME);
     Ok(())
 }
 
 fn build_project(project_root: &Path) -> Result<()> {
-    println!("Building project with custom toolchain...");
+    println!("Building project with cargo +nightly...");
     run_command(
         Command::new("cargo")
-            .args([&format!("+{}", TOOLCHAIN_NAME), "build-bpf"])
+            .args(["+nightly", "build-bpf"])
             .current_dir(project_root),
         "build project",
     )?;
     println!("Build complete!");
     Ok(())
-}
-
-fn get_submodule_url(repo_dir: &Path, submodule_path: &str) -> Result<String> {
-    let output = Command::new("git")
-        .args([
-            "config",
-            "--file",
-            ".gitmodules",
-            &format!("submodule.{}.url", submodule_path),
-        ])
-        .current_dir(repo_dir)
-        .output()
-        .context("failed to get submodule url")?;
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn run_command(cmd: &mut Command, description: &str) -> Result<()> {
