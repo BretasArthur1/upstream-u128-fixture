@@ -110,7 +110,7 @@ fn setup_linker(project_root: &Path) -> Result<()> {
     println!("[2/3] Building SBPF linker (LLVM_PREFIX={})...", llvm_install_dir.display());
     run_command(
         Command::new("cargo")
-            .args(["build", "--release"])
+            .args(["install", "--path", "."])
             .env("LLVM_PREFIX", &llvm_install_dir)
             .current_dir(&linker_dir),
         "build sbpf-linker",
@@ -122,10 +122,7 @@ fn setup_linker(project_root: &Path) -> Result<()> {
     std::fs::create_dir_all(&cargo_config_dir)?;
 
     let config_content = format!(
-        r#"[target.bpfel-unknown-unknown]
-build-std = ["core", "alloc"]
-
-[target.bpfel-unknown-none]
+        r#"[target.bpfel-unknown-none]
 rustflags = [
     "-C", "linker={}",
     "-C", "panic=abort",
@@ -135,7 +132,7 @@ rustflags = [
 ]
 
 [alias]
-build-bpf = "build --release --target bpfel-unknown-none"
+build-bpf = "build --release --target bpfel-unknown-none -Zbuild-std=core,alloc"
 "#,
         linker_bin.display()
     );
