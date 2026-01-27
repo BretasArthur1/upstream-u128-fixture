@@ -122,7 +122,7 @@ fn setup_linker(project_root: &Path) -> Result<()> {
     std::fs::create_dir_all(&cargo_config_dir)?;
 
     let config_content = format!(
-        r#"[unstable]
+        r#"[target.bpfel-unknown-unknown]
 build-std = ["core", "alloc"]
 
 [target.bpfel-unknown-none]
@@ -136,7 +136,6 @@ rustflags = [
 
 [alias]
 build-bpf = "build --release --target bpfel-unknown-none"
-xtask = "run --package xtask --"
 "#,
         linker_bin.display()
     );
