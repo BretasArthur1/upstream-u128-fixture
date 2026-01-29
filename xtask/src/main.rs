@@ -108,13 +108,64 @@ fn setup_linker(project_root: &Path) -> Result<()> {
     // 2. Build SBPF linker with LLVM_PREFIX pointing to our custom LLVM
     let llvm_install_dir = base_dir.join("llvm-install");
     println!("[2/3] Building SBPF linker (LLVM_PREFIX={})...", llvm_install_dir.display());
-    run_command(
-        Command::new("cargo")
-            .args(["install", "--path", "."])
-            .env("LLVM_PREFIX", &llvm_install_dir)
-            .current_dir(&linker_dir),
-        "build sbpf-linker",
-    )?;
+
+    let mut cmd = Command::new("cargo");
+    cmd.args(["install", "--path", "."])
+        .env("LLVM_PREFIX", &llvm_install_dir)
+        .current_dir(&linker_dir);
+
+    // On macOS, use Homebrew's llvm for libc++, zlib, and zstd
+    // (macOS doesn't provide static libraries, and building them from source is complex)
+    if cfg!(target_os = "macos") {
+        // Check if dependencies are installed, install if missing
+        let llvm_installed = std::process::Command::new("brew")
+            .args(["--prefix", "llvm"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let zlib_installed = std::process::Command::new("brew")
+            .args(["--prefix", "zlib"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let zstd_installed = std::process::Command::new("brew")
+            .args(["--prefix", "zstd"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if !llvm_installed || !zlib_installed || !zstd_installed {
+            println!("  Installing Homebrew dependencies (llvm, zlib, zstd)...");
+            run_command(
+                Command::new("brew").args(["install", "llvm", "zlib", "zstd"]),
+                "install brew dependencies",
+            )?;
+        }
+
+        // Get brew prefixes
+        let llvm_prefix = std::process::Command::new("brew")
+            .args(["--prefix", "llvm"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let zlib_prefix = std::process::Command::new("brew")
+            .args(["--prefix", "zlib"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let zstd_prefix = std::process::Command::new("brew")
+            .args(["--prefix", "zstd"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        
+        let llvm_lib_cxx = format!("{}/lib/c++", llvm_prefix);
+        cmd.env("CXXSTDLIB_PATH", &llvm_lib_cxx);
+        cmd.env("ZLIB_PATH", format!("{}/lib", zlib_prefix));
+        cmd.env("LIBZSTD_PATH", format!("{}/lib", zstd_prefix));
+    }
+
+    run_command(&mut cmd, "build sbpf-linker")?;
 
     // 3. Update .cargo/config.toml with linker path
     println!("[3/3] Updating .cargo/config.toml with linker path...");
