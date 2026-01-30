@@ -10,6 +10,7 @@ const LLVM_REPO: &str = "https://github.com/blueshift-gg/llvm-project.git";
 const LLVM_BRANCH: &str = "BPF_i128_ret";
 const LINKER_REPO: &str = "https://github.com/blueshift-gg/sbpf-linker";
 const LINKER_BRANCH: &str = "u128_mul_libcall";
+const GIT_DEPTH: &str = "1";
 
 /// xtask for setting up custom Rust compiler with i128 BPF support
 #[derive(Parser)]
@@ -99,7 +100,7 @@ fn setup_linker(project_root: &Path) -> Result<()> {
     } else {
         run_command(
             Command::new("git")
-                .args(["clone", "--branch", LINKER_BRANCH, LINKER_REPO])
+                .args(["clone", "--depth", GIT_DEPTH, "--branch", LINKER_BRANCH, LINKER_REPO])
                 .arg(&linker_dir),
             "clone sbpf-linker",
         )?;
@@ -211,7 +212,7 @@ fn setup_llvm() -> Result<()> {
     } else {
         run_command(
             Command::new("git")
-                .args(["clone", "--branch", LLVM_BRANCH, LLVM_REPO])
+                .args(["clone", "--depth", GIT_DEPTH, "--branch", LLVM_BRANCH, LLVM_REPO])
                 .arg(&llvm_src_dir),
             "clone llvm-project",
         )?;
